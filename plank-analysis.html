@@ -1,0 +1,2087 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <title>AI 平板支撑动作分析</title>
+
+  <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.17.0/dist/tf-core.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.17.0/dist/tf-converter.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.0/dist/pose-detection.min.js"></script>
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-height: 100%;
+      overflow-x: hidden;
+      overscroll-behavior: none;
+    }
+
+    body {
+      min-height: 100vh;
+      min-height: 100dvh;
+      background:
+        radial-gradient(circle at top, rgba(255, 226, 72, 0.18), transparent 30%),
+        linear-gradient(180deg, #2f6122 0%, #1d3914 100%);
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+      touch-action: manipulation;
+    }
+
+    .app {
+      width: min(1180px, 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .title {
+      margin-top: 6px;
+      font-size: clamp(24px, 4.4vw, 36px);
+      font-weight: 900;
+      color: #ffe14d;
+      text-align: center;
+      letter-spacing: 0.08em;
+      text-shadow: 2px 3px 8px rgba(0, 0, 0, 0.5);
+    }
+
+    .tip {
+      width: min(960px, 94vw);
+      color: #fff2b0;
+      text-align: center;
+      font-size: clamp(14px, 2.5vw, 18px);
+      line-height: 1.7;
+    }
+
+    .stage-wrap {
+      width: min(960px, 94vw);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .stage {
+      position: relative;
+      width: 100%;
+      min-width: 0;
+      height: min(58vh, 520px);
+      min-height: 420px;
+      overflow: hidden;
+      border: 4px solid rgba(255, 255, 255, 0.9);
+      border-radius: 18px;
+      background: rgba(0, 0, 0, 0.32);
+      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.35);
+      transition: border-color 0.2s ease;
+    }
+
+    .stage.alert {
+      border-color: #ff5c5c;
+      animation: alertPulse 1s infinite;
+    }
+
+    @keyframes alertPulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255, 92, 92, 0), 0 18px 44px rgba(0, 0, 0, 0.35); }
+      50% { box-shadow: 0 0 0 12px rgba(255, 92, 92, 0.35), 0 18px 44px rgba(0, 0, 0, 0.35); }
+    }
+
+    .camera,
+    .overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    .stage.rear-camera .camera,
+    .stage.rear-camera .overlay {
+      transform: none;
+    }
+
+    .overlay {
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    .status-pill {
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      z-index: 4;
+      padding: 9px 14px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      color: #fff6bf;
+      font-weight: 800;
+      backdrop-filter: blur(5px);
+    }
+
+    .alert-banner {
+      position: absolute;
+      left: 50%;
+      top: 14px;
+      z-index: 5;
+      transform: translateX(-50%);
+      max-width: calc(100% - 28px);
+      padding: 10px 18px;
+      border-radius: 14px;
+      background: rgba(224, 48, 48, 0.94);
+      border: 2px solid rgba(255, 255, 255, 0.8);
+      color: #fff;
+      font-weight: 900;
+      font-size: clamp(15px, 2.6vw, 21px);
+      text-align: center;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+      display: none;
+      animation: alertPop 0.35s ease;
+    }
+
+    .alert-banner.warn {
+      background: rgba(226, 160, 18, 0.95);
+      color: #3a2400;
+      border-color: rgba(255, 246, 200, 0.9);
+    }
+
+    .alert-banner.show {
+      display: block;
+    }
+
+    @keyframes alertPop {
+      from { transform: translate(-50%, -14px); opacity: 0; }
+      to { transform: translate(-50%, 0); opacity: 1; }
+    }
+
+    .feedback {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: 14px;
+      z-index: 4;
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: rgba(0, 0, 0, 0.62);
+      border: 2px solid rgba(255, 255, 255, 0.22);
+      backdrop-filter: blur(6px);
+    }
+
+    .feedback strong {
+      display: block;
+      color: #ffe14d;
+      font-size: clamp(18px, 3vw, 26px);
+      margin-bottom: 4px;
+    }
+
+    .feedback span {
+      display: block;
+      color: #fff;
+      font-size: clamp(14px, 2.2vw, 17px);
+      line-height: 1.5;
+    }
+
+    .panel {
+      min-width: 0;
+      border-radius: 18px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .time-card {
+      text-align: center;
+      border-radius: 16px;
+      padding: 16px 12px 14px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 3px solid #fff;
+    }
+
+    .time-card span {
+      display: block;
+      font-size: 52px;
+      line-height: 1;
+      font-weight: 900;
+      color: #ffe14d;
+      text-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .time-card small {
+      display: block;
+      margin-top: 8px;
+      color: #fff2b0;
+      font-weight: 800;
+      font-size: 15px;
+    }
+
+    .score-chip {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12);
+      font-weight: 800;
+      font-size: 15px;
+      color: #fff;
+    }
+
+    .score-chip b {
+      font-size: 20px;
+      color: #4bff90;
+    }
+
+    .score-chip.mid b { color: #ffe14d; }
+    .score-chip.low b { color: #ff6b6b; }
+
+    .progress-bar {
+      position: relative;
+      height: 36px;
+      border-radius: 12px;
+      overflow: hidden;
+      background: rgba(0, 0, 0, 0.28);
+      border: 3px solid rgba(255, 255, 255, 0.9);
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #ff482f 0%, #ffe14d 100%);
+      transition: width 0.2s ease;
+    }
+
+    .progress-text {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      font-weight: 900;
+      color: #fff;
+      text-shadow: 1px 2px 4px rgba(0, 0, 0, 0.7);
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: #ffe14d;
+      font-weight: 900;
+      font-size: 15px;
+      letter-spacing: 0.04em;
+    }
+
+    .section-title em {
+      font-style: normal;
+      color: #fff2b0;
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .trend-wrap {
+      border-radius: 12px;
+      overflow: hidden;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    #trend {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .metric-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .metric {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-radius: 12px;
+      padding: 9px 12px;
+      background: rgba(0, 0, 0, 0.24);
+    }
+
+    .metric small {
+      color: #fff2b0;
+      font-weight: 700;
+    }
+
+    .metric strong {
+      color: #fff;
+      font-size: 17px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .metric.posture-ok {
+      background: rgba(23, 174, 84, 0.3);
+      border: 1px solid rgba(75, 255, 144, 0.45);
+    }
+
+    .metric.posture-ok strong { color: #4bff90; }
+
+    .metric.posture-bad {
+      background: rgba(224, 48, 48, 0.3);
+      border: 1px solid rgba(255, 92, 92, 0.52);
+    }
+
+    .metric.posture-bad strong { color: #ff6b6b; }
+
+    .metric.posture-wait {
+      background: rgba(255, 225, 77, 0.16);
+      border: 1px solid rgba(255, 225, 77, 0.36);
+    }
+
+    .metric.posture-wait strong { color: #ffe14d; }
+
+    .issue-list {
+      display: grid;
+      gap: 7px;
+      max-height: 300px;
+      overflow-y: auto;
+      padding-right: 2px;
+    }
+
+    .issue-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(0, 0, 0, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      font-size: 13.5px;
+    }
+
+    .issue-row .name {
+      color: #fff2b0;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .issue-row .state {
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    .issue-row.ok { background: rgba(23, 174, 84, 0.22); border-color: rgba(75, 255, 144, 0.35); }
+    .issue-row.ok .state { color: #4bff90; }
+    .issue-row.warn { background: rgba(255, 200, 40, 0.18); border-color: rgba(255, 225, 77, 0.42); }
+    .issue-row.warn .state { color: #ffe14d; }
+    .issue-row.error { background: rgba(224, 48, 48, 0.28); border-color: rgba(255, 92, 92, 0.6); animation: rowBlink 1.1s infinite; }
+    .issue-row.error .state { color: #ff8b8b; }
+
+    @keyframes rowBlink {
+      0%, 100% { background: rgba(224, 48, 48, 0.22); }
+      50% { background: rgba(224, 48, 48, 0.45); }
+    }
+
+    .report-card {
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: rgba(0, 0, 0, 0.26);
+      border: 1px dashed rgba(255, 255, 255, 0.35);
+      font-size: 14px;
+      line-height: 1.75;
+      color: #fff2b0;
+    }
+
+    .report-card b {
+      color: #ffe14d;
+    }
+
+    .report-card .report-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .report-card .report-line em {
+      font-style: normal;
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .control-btn {
+      width: 100%;
+      min-width: 0;
+      min-height: 44px;
+      padding: 11px 18px;
+      border-radius: 14px;
+      border: 2px solid rgba(255, 255, 255, 0.34);
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff2b0;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+    }
+
+    .control-btn:hover { transform: translateY(-1px); }
+
+    .control-btn.primary {
+      background: linear-gradient(180deg, #ffe14d 0%, #ffd447 100%);
+      color: #582800;
+      border-color: #fff3a7;
+      box-shadow: 0 10px 22px rgba(255, 225, 100, 0.25);
+    }
+
+    .toggle-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .toggle-btn {
+      min-height: 44px;
+      border-radius: 14px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff2b0;
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .toggle-btn.on {
+      background: rgba(75, 255, 144, 0.22);
+      border-color: rgba(75, 255, 144, 0.6);
+      color: #d7ffe6;
+    }
+
+    .rules {
+      width: min(960px, 94vw);
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .rule-card {
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      line-height: 1.7;
+    }
+
+    .rule-card h3 {
+      color: #ffe14d;
+      margin-bottom: 6px;
+      font-size: 18px;
+    }
+
+    .rule-card p {
+      color: #fff2b0;
+      font-size: 14px;
+    }
+
+    @media (max-width: 1024px) {
+      .stage-wrap {
+        width: min(860px, 96vw);
+        grid-template-columns: 1fr;
+      }
+
+      .stage {
+        height: min(60vh, 620px);
+        height: min(60dvh, 620px);
+        min-height: 420px;
+      }
+
+      .rules {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 560px) {
+      body {
+        padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+      }
+
+      .app { gap: 10px; }
+
+      .title {
+        margin-top: 2px;
+        font-size: clamp(21px, 7vw, 28px);
+        letter-spacing: 0.04em;
+      }
+
+      .tip {
+        width: 96vw;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .stage-wrap,
+      .rules {
+        width: 96vw;
+      }
+
+      .stage {
+        height: min(56vh, 520px);
+        height: min(56dvh, 520px);
+        min-height: 340px;
+        border-width: 3px;
+        border-radius: 16px;
+      }
+
+      .status-pill {
+        left: 10px;
+        top: 10px;
+        max-width: calc(100% - 20px);
+        padding: 7px 11px;
+        font-size: 13px;
+      }
+
+      .alert-banner {
+        top: 54px;
+        padding: 9px 12px;
+        font-size: 15px;
+      }
+
+      .feedback {
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        padding: 11px 12px;
+      }
+
+      .feedback strong { font-size: 18px; }
+      .feedback span { font-size: 13px; }
+
+      .panel { padding: 12px; }
+
+      .time-card { padding: 12px; }
+      .time-card span { font-size: 44px; }
+      .issue-list { max-height: 240px; }
+    }
+
+    @media (orientation: landscape) and (max-height: 620px) {
+      .app { align-items: stretch; }
+
+      .title,
+      .tip,
+      .rules { display: none; }
+
+      .stage-wrap {
+        width: 100%;
+        grid-template-columns: minmax(0, 1fr) 280px;
+      }
+
+      .stage {
+        height: calc(100dvh - 92px);
+        min-height: 320px;
+        aspect-ratio: 16 / 9;
+      }
+
+      .panel {
+        overflow-y: auto;
+        max-height: calc(100dvh - 92px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1 class="title">AI 平板支撑动作分析</h1>
+    <p class="tip">把设备横放在身体正侧方，全身入镜。姿势标准时自动计时，动作出现错误会立刻闪烁提醒并语音播报。</p>
+
+    <section class="stage-wrap">
+      <div class="stage" id="stage">
+        <video id="video" class="camera" playsinline webkit-playsinline autoplay muted></video>
+        <canvas id="canvas" class="overlay"></canvas>
+        <div id="status" class="status-pill">正在加载识别模型...</div>
+        <div id="alertBanner" class="alert-banner">⚠</div>
+        <div class="feedback">
+          <strong id="feedbackTitle">等待摄像头</strong>
+          <span id="feedbackDetail">请允许浏览器访问摄像头。</span>
+        </div>
+      </div>
+
+      <aside class="panel">
+        <div class="time-card">
+          <span id="holdTime">00:00</span>
+          <small>标准保持时间</small>
+          <div class="score-chip" id="scoreChip">动作评分 <b id="scoreValue">100</b> 分</div>
+        </div>
+
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+          <div id="progressText" class="progress-text">目标 60 秒</div>
+        </div>
+
+        <div>
+          <div class="section-title">动作趋势 <em>身体直线度 / 髋部偏差</em></div>
+          <div class="trend-wrap">
+            <canvas id="trend" width="620" height="190"></canvas>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-title">实时指标</div>
+          <div class="metric-list">
+            <div class="metric" id="postureMetric"><small>姿态状态</small><strong id="postureText">等待识别</strong></div>
+            <div class="metric"><small>身体直线度</small><strong id="lineText">--</strong></div>
+            <div class="metric"><small>髋部偏差</small><strong id="hipText">--</strong></div>
+            <div class="metric"><small>肘部角度</small><strong id="elbowText">--</strong></div>
+            <div class="metric"><small>头颈角度</small><strong id="neckText">--</strong></div>
+            <div class="metric"><small>躯干水平度</small><strong id="levelText">--</strong></div>
+            <div class="metric"><small>身体稳定度</small><strong id="stabilityText">--</strong></div>
+            <div class="metric"><small>识别置信</small><strong id="confidenceText">0%</strong></div>
+            <div class="metric"><small>最长保持</small><strong id="bestText">00:00</strong></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-title">动作分析 <em>红=错误 · 黄=注意</em></div>
+          <div class="issue-list" id="issueList"></div>
+        </div>
+
+        <div>
+          <div class="section-title">本次分析总结</div>
+          <div class="report-card" id="reportCard">
+            <div class="report-line"><b>错误总时长</b><em id="reportErrTime">0.0 秒</em></div>
+            <div class="report-line"><b>注意总时长</b><em id="reportWarnTime">0.0 秒</em></div>
+            <div class="report-line"><b>错误次数</b><em id="reportErrCount">0 次</em></div>
+            <div class="report-line"><b>主要问题</b><em id="reportMain">暂无</em></div>
+            <div class="report-line"><b>建议</b><em id="reportAdvice">保持标准姿势</em></div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button id="pauseBtn" class="control-btn primary" type="button">暂停计时</button>
+          <button id="resetBtn" class="control-btn" type="button">重置计时与统计</button>
+          <button id="cameraBtn" class="control-btn" type="button">切换摄像头</button>
+          <div class="toggle-row">
+            <button id="soundBtn" class="toggle-btn on" type="button">错误提示音：开</button>
+            <button id="voiceBtn" class="toggle-btn on" type="button">语音播报：开</button>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="rules">
+      <article class="rule-card">
+        <h3>标准姿势</h3>
+        <p>肘部位于肩部正下方（约 90°），肩、髋、膝、踝一条直线，头颈中立、目视地面，双肩双髋等高不扭转。</p>
+      </article>
+      <article class="rule-card">
+        <h3>错误提醒</h3>
+        <p>塌腰、翘臀、身体不成直线等错误持续约 0.5 秒即判定成立：画面边框闪红、顶部弹出提示、蜂鸣并语音播报，同时暂停计时。</p>
+      </article>
+      <article class="rule-card">
+        <h3>拍摄建议</h3>
+        <p>设备放在身体正侧方 1~2 米处，高度与身体齐平，全身（头到脚）都要入镜，光线充足以免关键点丢失。</p>
+      </article>
+    </section>
+  </main>
+
+  <script type="module">
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const stage = document.getElementById('stage');
+    const statusEl = document.getElementById('status');
+    const alertBanner = document.getElementById('alertBanner');
+    const feedbackTitle = document.getElementById('feedbackTitle');
+    const feedbackDetail = document.getElementById('feedbackDetail');
+    const holdTimeEl = document.getElementById('holdTime');
+    const scoreChip = document.getElementById('scoreChip');
+    const scoreValue = document.getElementById('scoreValue');
+    const postureMetric = document.getElementById('postureMetric');
+    const postureText = document.getElementById('postureText');
+    const lineText = document.getElementById('lineText');
+    const hipText = document.getElementById('hipText');
+    const elbowText = document.getElementById('elbowText');
+    const neckText = document.getElementById('neckText');
+    const levelText = document.getElementById('levelText');
+    const stabilityText = document.getElementById('stabilityText');
+    const confidenceText = document.getElementById('confidenceText');
+    const bestText = document.getElementById('bestText');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+    const issueListEl = document.getElementById('issueList');
+    const reportErrTime = document.getElementById('reportErrTime');
+    const reportWarnTime = document.getElementById('reportWarnTime');
+    const reportErrCount = document.getElementById('reportErrCount');
+    const reportMain = document.getElementById('reportMain');
+    const reportAdvice = document.getElementById('reportAdvice');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const cameraBtn = document.getElementById('cameraBtn');
+    const soundBtn = document.getElementById('soundBtn');
+    const voiceBtn = document.getElementById('voiceBtn');
+    const trendCanvas = document.getElementById('trend');
+    const trendCtx = trendCanvas.getContext('2d');
+
+    const POSE_CONNECTIONS = [
+      { start: 11, end: 12 },
+      { start: 11, end: 13 },
+      { start: 13, end: 15 },
+      { start: 12, end: 14 },
+      { start: 14, end: 16 },
+      { start: 11, end: 23 },
+      { start: 12, end: 24 },
+      { start: 23, end: 24 },
+      { start: 23, end: 25 },
+      { start: 25, end: 27 },
+      { start: 24, end: 26 },
+      { start: 26, end: 28 },
+      { start: 27, end: 29 },
+      { start: 28, end: 30 },
+    ];
+
+    const HOLD_TARGET_MS = 60000;
+    const ERROR_CONFIRM_MS = 500; // 错误持续多久才判定成立
+    const WARN_CONFIRM_MS = 400;
+    const ERROR_BEEP_COOLDOWN = 2600;
+    const ERROR_VOICE_COOLDOWN = 5000;
+    const VOICE_GLOBAL_GAP = 2200;
+
+    // 每一个检测项：key / 名称 / 级别 / 提示语 / 纠正建议
+    const ISSUE_DEFS = [
+      { key: 'frame', name: '全身入镜', level: 'error', tip: '请让头和脚都进入画面', advice: '把设备放远一点，让全身完整入镜' },
+      { key: 'line', name: '身体未成直线', level: 'error', tip: '肩、髋、膝保持在一条直线上', advice: '收紧臀部与核心，让身体成一条直线' },
+      { key: 'sag', name: '塌腰', level: 'error', tip: '髋部下沉，收紧核心把髋部抬起', advice: '收紧腹部与臀部，髋部抬回肩踝连线' },
+      { key: 'pike', name: '翘臀', level: 'error', tip: '髋部抬得过高，放低髋部', advice: '稍微放低髋部，让身体保持一条直线' },
+      { key: 'elbowAngle', name: '肘部角度偏差', level: 'warn', tip: '肘部约 90°，前臂贴地支撑', advice: '调整支撑位置，使大臂与小臂接近垂直' },
+      { key: 'elbowPos', name: '肘部不在肩下', level: 'warn', tip: '支撑点前后调整，肘部对准肩部', advice: '把肘部移动到肩关节正下方' },
+      { key: 'neck', name: '头颈姿态', level: 'warn', tip: '头颈保持中立，目视地面', advice: '下巴微收，视线看向双手之间' },
+      { key: 'twist', name: '身体左右不平', level: 'warn', tip: '双肩双髋保持等高，避免扭转', advice: '调整两侧发力，保持骨盆与肩带水平' },
+      { key: 'stability', name: '支撑不稳定', level: 'warn', tip: '身体在晃动，注意稳定躯干', advice: '收紧核心、放慢呼吸，减少上下晃动' },
+      { key: 'level', name: '躯干倾斜', level: 'warn', tip: '身体与地面不平行', advice: '调整肩与脚的高度差，让躯干接近水平' },
+    ];
+    const ISSUE_MAP = Object.fromEntries(ISSUE_DEFS.map((def) => [def.key, def]));
+
+    const state = {
+      facingMode: 'user',
+      stream: null,
+      landmarker: null,
+      devices: [],
+      currentDeviceId: '',
+      cameraSwitching: false,
+      lastVideoTime: -1,
+      predicting: false,
+      rafId: 0,
+      paused: false,
+      holdMs: 0,
+      bestMs: 0,
+      lastTs: 0,
+      holdingNow: false,
+      soundEnabled: true,
+      voiceEnabled: true,
+      lastVoiceAt: 0,
+      errMs: 0,
+      warnMs: 0,
+      errCount: 0,
+      stabilitySamples: [],
+      trendSamples: [],
+      runtime: {},
+      lastUiAt: 0,
+      lastFrameIssue: null,
+      recoveredAt: 0,
+    };
+
+    ISSUE_DEFS.forEach((def) => {
+      state.runtime[def.key] = { since: 0, pendingLevel: '', active: false, level: '', count: 0, ms: 0, lastBeepAt: 0, lastVoiceAt: 0, id: '' };
+    });
+
+    // ---------- 提醒：音效 / 语音 ----------
+    let audioCtx = null;
+
+    function initAudio() {
+      if (audioCtx) return;
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (Ctx) audioCtx = new Ctx();
+      } catch (error) {
+        console.warn('音频初始化失败：', error);
+      }
+    }
+
+    function beep(frequency, duration, delay = 0, type = 'sine', volume = 0.16) {
+      if (!state.soundEnabled || !audioCtx) return;
+      try {
+        const startAt = audioCtx.currentTime + delay;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(frequency, startAt);
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(volume, startAt + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(startAt);
+        osc.stop(startAt + duration + 0.03);
+      } catch (error) {
+        console.warn('提示音播放失败：', error);
+      }
+    }
+
+    function playErrorBeep() {
+      beep(760, 0.16, 0, 'square', 0.14);
+      beep(520, 0.2, 0.18, 'square', 0.14);
+    }
+
+    function playWarnBeep() {
+      beep(600, 0.16, 0, 'sine', 0.12);
+    }
+
+    function playRecoverBeep() {
+      beep(880, 0.12, 0, 'sine', 0.1);
+      beep(1180, 0.16, 0.12, 'sine', 0.1);
+    }
+
+    function speak(text) {
+      if (!state.voiceEnabled || !window.speechSynthesis || !text) return;
+      const now = performance.now();
+      if (now - state.lastVoiceAt < VOICE_GLOBAL_GAP) return;
+      state.lastVoiceAt = now;
+      try {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'zh-CN';
+        utterance.rate = 1.15;
+        utterance.pitch = 1.05;
+        window.speechSynthesis.speak(utterance);
+      } catch (error) {
+        console.warn('语音播报失败：', error);
+      }
+    }
+
+    // ---------- BlazePose 模型加载（多源 + 缓存） ----------
+    const BLAZEPOSE_MODEL_BASE_URLS = [
+      'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404',
+      'https://unpkg.com/@mediapipe/pose@0.5.1675469404',
+      'https://fastly.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404',
+    ];
+    const MODEL_CACHE_NAME = 'aimin-blazepose-model-v2';
+    const MODEL_CACHE_READY_KEY = 'aimin:blazepose-model-cache-ready:v2';
+    const BLAZEPOSE_MODEL_FILES = [
+      'pose_solution_packed_assets.data',
+      'pose_solution_packed_assets_loader.js',
+      'pose_solution_simd_wasm_bin.js',
+      'pose_solution_simd_wasm_bin.wasm',
+      'pose_solution_wasm_bin.js',
+      'pose_solution_wasm_bin.wasm',
+    ];
+    const MODEL_FILE_FETCH_TIMEOUT = 12000;
+    const DETECTOR_LOAD_TIMEOUT = 26000;
+    let activeModelBaseUrl = BLAZEPOSE_MODEL_BASE_URLS[0];
+    try {
+      const savedModelBaseUrl = window.localStorage?.getItem(MODEL_CACHE_READY_KEY);
+      if (BLAZEPOSE_MODEL_BASE_URLS.includes(savedModelBaseUrl)) activeModelBaseUrl = savedModelBaseUrl;
+    } catch (_error) {
+      activeModelBaseUrl = BLAZEPOSE_MODEL_BASE_URLS[0];
+    }
+    const ESTIMATE_CONFIG = { maxPoses: 1, flipHorizontal: false };
+
+    function withTimeout(promise, ms, message) {
+      let timer = null;
+      const timeout = new Promise((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(message)), ms);
+      });
+      return Promise.race([promise, timeout]).finally(() => {
+        if (timer !== null) window.clearTimeout(timer);
+      });
+    }
+
+    function getModelFileFromUrl(url) {
+      try {
+        const parsed = new URL(url, location.href);
+        return BLAZEPOSE_MODEL_FILES.find((file) => parsed.pathname.endsWith(`/${file}`)) || '';
+      } catch (_error) {
+        return '';
+      }
+    }
+
+    function normalizeModelUrl(url) {
+      const matchedFile = getModelFileFromUrl(url);
+      return matchedFile ? `${activeModelBaseUrl}/${matchedFile}` : '';
+    }
+
+    async function openModelCache() {
+      if (!window.caches) return null;
+      try {
+        return await window.caches.open(MODEL_CACHE_NAME);
+      } catch (error) {
+        console.warn('无法打开模型缓存，将继续直接联网加载。', error);
+        return null;
+      }
+    }
+
+    function getModelUrls(baseUrl) {
+      return BLAZEPOSE_MODEL_FILES.map((file) => `${baseUrl}/${file}`);
+    }
+
+    function getPreferredModelBaseUrls() {
+      return [activeModelBaseUrl, ...BLAZEPOSE_MODEL_BASE_URLS].filter((baseUrl, index, urls) => urls.indexOf(baseUrl) === index);
+    }
+
+    async function isModelBaseCached(cache, baseUrl) {
+      for (const url of getModelUrls(baseUrl)) {
+        if (!(await cache.match(url))) return false;
+      }
+      return true;
+    }
+
+    async function getCachedModelBaseUrl() {
+      const cache = await openModelCache();
+      if (!cache) return '';
+      for (const baseUrl of getPreferredModelBaseUrls()) {
+        if (await isModelBaseCached(cache, baseUrl)) return baseUrl;
+      }
+      return '';
+    }
+
+    async function preloadModelBase(baseUrl) {
+      const cache = await openModelCache();
+      if (!cache) return false;
+
+      for (const url of getModelUrls(baseUrl)) {
+        if (await cache.match(url)) continue;
+        try {
+          const response = await withTimeout(
+            fetch(url, { mode: 'cors', cache: 'no-store' }),
+            MODEL_FILE_FETCH_TIMEOUT,
+            `模型资源下载超时：${url}`,
+          );
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          await cache.put(url, response.clone());
+        } catch (error) {
+          console.warn('模型资源缓存失败：', url, error);
+          return false;
+        }
+      }
+
+      activeModelBaseUrl = baseUrl;
+      window.localStorage?.setItem(MODEL_CACHE_READY_KEY, baseUrl);
+      return true;
+    }
+
+    async function preloadModelCache() {
+      const cachedBaseUrl = await getCachedModelBaseUrl();
+      if (cachedBaseUrl) {
+        activeModelBaseUrl = cachedBaseUrl;
+        window.localStorage?.setItem(MODEL_CACHE_READY_KEY, cachedBaseUrl);
+        return true;
+      }
+      return false;
+    }
+
+    function installCachedModelFetch() {
+      if (!window.caches || window.fetch.__aiminModelCacheInstalled) return false;
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const requestUrl = typeof input === 'string' ? input : input?.url;
+        const modelUrl = normalizeModelUrl(requestUrl);
+        if (!modelUrl) return nativeFetch(input, init);
+
+        const cache = await openModelCache();
+        const cached = cache ? await cache.match(modelUrl) : null;
+        if (cached) return cached.clone();
+
+        const response = await nativeFetch(input, init);
+        if (cache && response.ok) {
+          cache.put(modelUrl, response.clone()).catch((error) => {
+            console.warn('写入模型缓存失败：', modelUrl, error);
+          });
+        }
+        return response;
+      };
+      window.fetch.__aiminModelCacheInstalled = true;
+      return true;
+    }
+
+    async function prepareModelCache() {
+      installCachedModelFetch();
+      return Boolean(await preloadModelCache());
+    }
+
+    async function ensureModelCacheReady() {
+      if (!window.caches) return false;
+      if (await preloadModelCache()) return true;
+      return preloadModelBase(activeModelBaseUrl);
+    }
+
+    async function createPoseDetectorFrom(baseUrl) {
+      activeModelBaseUrl = baseUrl;
+      statusEl.textContent = `正在加载模型：${new URL(baseUrl).hostname}`;
+      return withTimeout(
+        window.poseDetection.createDetector(
+          window.poseDetection.SupportedModels.BlazePose,
+          { runtime: 'mediapipe', modelType: 'lite', solutionPath: baseUrl, enableSmoothing: true },
+        ),
+        DETECTOR_LOAD_TIMEOUT,
+        `BlazePose Lite 模型下载超时：${new URL(baseUrl).hostname}`,
+      );
+    }
+
+    async function initializePoseDetector() {
+      if (!window.poseDetection || typeof window.poseDetection.createDetector !== 'function') {
+        throw new Error('姿态识别库加载失败，请确认当前浏览器可以加载 TensorFlow pose-detection。');
+      }
+      if (!window.Pose) {
+        throw new Error('BlazePose 运行库加载失败，请确认当前浏览器可以加载 @mediapipe/pose。');
+      }
+
+      const errors = [];
+      for (const baseUrl of getPreferredModelBaseUrls()) {
+        try {
+          const detector = await createPoseDetectorFrom(baseUrl);
+          activeModelBaseUrl = baseUrl;
+          window.localStorage?.setItem(MODEL_CACHE_READY_KEY, baseUrl);
+          return detector;
+        } catch (error) {
+          console.warn('模型源加载失败：', baseUrl, error);
+          errors.push(`${new URL(baseUrl).hostname}: ${error?.message || '加载失败'}`);
+        }
+      }
+      throw new Error(`BlazePose 模型加载失败，已尝试 ${errors.join('；')}`);
+    }
+
+    // ---------- 姿态与指标计算 ----------
+    function getKeypoint(pose, name) {
+      return pose?.keypoints?.find((keypoint) => keypoint.name === name || keypoint.part === name) || null;
+    }
+
+    function convertPoseToLandmarks(pose) {
+      const names = [
+        'nose',
+        'left_eye_inner', 'left_eye', 'left_eye_outer',
+        'right_eye_inner', 'right_eye', 'right_eye_outer',
+        'left_ear', 'right_ear',
+        'mouth_left', 'mouth_right',
+        'left_shoulder', 'right_shoulder',
+        'left_elbow', 'right_elbow',
+        'left_wrist', 'right_wrist',
+        'left_pinky', 'right_pinky',
+        'left_index', 'right_index',
+        'left_thumb', 'right_thumb',
+        'left_hip', 'right_hip',
+        'left_knee', 'right_knee',
+        'left_ankle', 'right_ankle',
+        'left_heel', 'right_heel',
+        'left_foot_index', 'right_foot_index',
+      ];
+      const width = video.videoWidth || video.clientWidth || 1;
+      const height = video.videoHeight || video.clientHeight || 1;
+
+      return names.map((name) => {
+        const keypoint = getKeypoint(pose, name);
+        if (!keypoint) return { x: 0, y: 0, visibility: 0 };
+        return {
+          x: keypoint.x / width,
+          y: keypoint.y / height,
+          visibility: typeof keypoint.score === 'number' ? keypoint.score : 1,
+        };
+      });
+    }
+
+    function angle(a, b, c) {
+      const ab = { x: a.x - b.x, y: a.y - b.y };
+      const cb = { x: c.x - b.x, y: c.y - b.y };
+      const dot = ab.x * cb.x + ab.y * cb.y;
+      const mag = Math.hypot(ab.x, ab.y) * Math.hypot(cb.x, cb.y);
+      if (!mag) return 0;
+      return Math.round((Math.acos(Math.min(Math.max(dot / mag, -1), 1)) * 180) / Math.PI);
+    }
+
+    function visibilityOf(point) {
+      return typeof point.visibility === 'number' ? point.visibility : 1;
+    }
+
+    function midpoint(a, b) {
+      return {
+        x: (a.x + b.x) / 2,
+        y: (a.y + b.y) / 2,
+        visibility: Math.min(visibilityOf(a), visibilityOf(b)),
+      };
+    }
+
+    function getPlankMetrics(landmarks) {
+      const shoulder = midpoint(landmarks[11], landmarks[12]);
+      const elbow = midpoint(landmarks[13], landmarks[14]);
+      const wrist = midpoint(landmarks[15], landmarks[16]);
+      const hip = midpoint(landmarks[23], landmarks[24]);
+      const knee = midpoint(landmarks[25], landmarks[26]);
+      const ankle = midpoint(landmarks[27], landmarks[28]);
+      const leftEar = landmarks[7];
+      const rightEar = landmarks[8];
+
+      const bodyLineAngle = angle(shoulder, hip, knee);
+      const fullBodyAngle = angle(shoulder, hip, ankle);
+      const elbowAngle = angle(shoulder, elbow, wrist);
+
+      let neckAngle = 0;
+      const neckVisible = visibilityOf(leftEar) >= 0.4 && visibilityOf(rightEar) >= 0.4;
+      if (neckVisible) {
+        const ear = midpoint(leftEar, rightEar);
+        neckAngle = angle(ear, shoulder, hip);
+      }
+
+      // 髋部相对肩-踝连线偏差：正值 = 塌腰，负值 = 翘臀
+      const dx = ankle.x - shoulder.x;
+      const dy = ankle.y - shoulder.y;
+      const lineLen = Math.hypot(dx, dy) || 0.001;
+      const t = Math.min(Math.max(((hip.x - shoulder.x) * dx + (hip.y - shoulder.y) * dy) / (lineLen * lineLen), 0), 1);
+      const projX = shoulder.x + t * dx;
+      const projY = shoulder.y + t * dy;
+      const hipDeviation = (hip.y - projY) / lineLen;
+      const hipDeviationPx = { x: projX, y: projY };
+
+      // 躯干相对地面（画面水平线）的倾斜角，越小越接近水平
+      const torsoLevel = Math.abs(Math.round((Math.atan2(dy, Math.abs(dx) || 0.0001) * 180) / Math.PI));
+      const torsoLevelDeg = Math.min(torsoLevel, 180 - torsoLevel);
+
+      // 左右是否等高（仅在两肩/两髋都可见时判断，避免侧视遮挡误判）
+      const shouldersVisible = visibilityOf(landmarks[11]) >= 0.5 && visibilityOf(landmarks[12]) >= 0.5;
+      const hipsVisible = visibilityOf(landmarks[23]) >= 0.5 && visibilityOf(landmarks[24]) >= 0.5;
+      const torsoScale = Math.max(Math.abs(hip.y - shoulder.y), 0.12);
+      let twistRatio = 0;
+      let twistVisible = false;
+      if (shouldersVisible || hipsVisible) {
+        twistVisible = true;
+        const shoulderDiff = shouldersVisible ? Math.abs(landmarks[11].y - landmarks[12].y) : 0;
+        const hipDiff = hipsVisible ? Math.abs(landmarks[23].y - landmarks[24].y) : 0;
+        twistRatio = Math.max(shoulderDiff, hipDiff) / torsoScale;
+      }
+
+      const elbowUnderShoulder = Math.abs(elbow.x - shoulder.x) < 0.12;
+      const confidence = Math.min(
+        visibilityOf(landmarks[11]),
+        visibilityOf(landmarks[12]),
+        visibilityOf(landmarks[23]),
+        visibilityOf(landmarks[24]),
+        visibilityOf(landmarks[25]),
+        visibilityOf(landmarks[26]),
+      );
+
+      const valid = confidence >= 0.4;
+      const isPlankPosition = valid && bodyLineAngle >= 145 && elbowAngle >= 50 && elbowAngle <= 135;
+
+      return {
+        shoulder, elbow, wrist, hip, knee, ankle,
+        bodyLineAngle,
+        fullBodyAngle,
+        elbowAngle,
+        neckAngle,
+        neckVisible,
+        elbowUnderShoulder,
+        hipDeviation,
+        hipDeviationPx,
+        torsoLevelDeg,
+        twistRatio,
+        twistVisible,
+        confidence,
+        valid,
+        isPlankPosition,
+      };
+    }
+
+    // ---------- 动作分析：逐项判定 ----------
+    function buildAnalysis(metrics, stabilityStd) {
+      const items = [];
+      const push = (key, level, valueText) => {
+        const def = ISSUE_MAP[key];
+        items.push({ key, level, name: def.name, tip: def.tip, advice: def.advice, level$: level, valueText });
+      };
+
+      if (!metrics.valid) {
+        push('frame', 'error', '关键点缺失');
+        // 关键点不足时其余项不参与判定，避免误报
+        return items;
+      }
+
+      // 1. 身体直线
+      if (metrics.bodyLineAngle < 148) push('line', 'error', `${metrics.bodyLineAngle}°`);
+      else if (metrics.bodyLineAngle < 160) push('line', 'warn', `${metrics.bodyLineAngle}°`);
+      else push('line', 'ok', `${metrics.bodyLineAngle}°`);
+
+      // 2. 塌腰 / 翘臀
+      if (metrics.hipDeviation > 0.07) push('sag', 'error', `${(metrics.hipDeviation * 100).toFixed(1)}%`);
+      else if (metrics.hipDeviation > 0.04) push('sag', 'warn', `${(metrics.hipDeviation * 100).toFixed(1)}%`);
+      else push('sag', 'ok', `${(metrics.hipDeviation * 100).toFixed(1)}%`);
+
+      if (metrics.hipDeviation < -0.07) push('pike', 'error', `${(metrics.hipDeviation * 100).toFixed(1)}%`);
+      else if (metrics.hipDeviation < -0.04) push('pike', 'warn', `${(metrics.hipDeviation * 100).toFixed(1)}%`);
+      else push('pike', 'ok', `${Math.abs(metrics.hipDeviation * 100).toFixed(1)}%`);
+
+      // 3. 肘部角度
+      if (metrics.elbowAngle < 50 || metrics.elbowAngle > 140) push('elbowAngle', 'error', `${metrics.elbowAngle}°`);
+      else if (metrics.elbowAngle < 70 || metrics.elbowAngle > 115) push('elbowAngle', 'warn', `${metrics.elbowAngle}°`);
+      else push('elbowAngle', 'ok', `${metrics.elbowAngle}°`);
+
+      // 4. 肘部位移
+      const elbowOffset = Math.abs(metrics.elbow.x - metrics.shoulder.x);
+      if (elbowOffset > 0.2) push('elbowPos', 'error', `${(elbowOffset * 100).toFixed(0)}%`);
+      else if (elbowOffset > 0.12) push('elbowPos', 'warn', `${(elbowOffset * 100).toFixed(0)}%`);
+      else push('elbowPos', 'ok', '对齐');
+
+      // 5. 头颈
+      if (!metrics.neckVisible) push('neck', 'ok', '--');
+      else if (metrics.neckAngle < 125) push('neck', 'error', `${metrics.neckAngle}°`);
+      else if (metrics.neckAngle < 140) push('neck', 'warn', `${metrics.neckAngle}°`);
+      else push('neck', 'ok', `${metrics.neckAngle}°`);
+
+      // 6. 左右不平 / 扭转
+      if (!metrics.twistVisible) push('twist', 'ok', '--');
+      else if (metrics.twistRatio > 0.22) push('twist', 'error', `${(metrics.twistRatio * 100).toFixed(0)}%`);
+      else if (metrics.twistRatio > 0.14) push('twist', 'warn', `${(metrics.twistRatio * 100).toFixed(0)}%`);
+      else push('twist', 'ok', '水平');
+
+      // 7. 稳定度（近 2 秒髋部抖动标准差）
+      if (stabilityStd === null) push('stability', 'ok', '--');
+      else if (stabilityStd > 0.03) push('stability', 'error', `${(stabilityStd * 100).toFixed(1)}`);
+      else if (stabilityStd > 0.014) push('stability', 'warn', `${(stabilityStd * 100).toFixed(1)}`);
+      else push('stability', 'ok', '稳定');
+
+      // 8. 躯干水平度
+      if (!metrics.isPlankPosition) push('level', 'ok', '--');
+      else if (metrics.torsoLevelDeg > 32) push('level', 'warn', `${metrics.torsoLevelDeg}°`);
+      else push('level', 'ok', `${metrics.torsoLevelDeg}°`);
+
+      return items;
+    }
+
+    function updateTrendSamples(metrics, now) {
+      if (!metrics.valid) return;
+      state.trendSamples.push({
+        t: now,
+        line: metrics.bodyLineAngle,
+        dev: Math.max(Math.min(metrics.hipDeviation * 100, 40), -40),
+        error: false,
+      });
+      const cutoff = now - 24000;
+      while (state.trendSamples.length && state.trendSamples[0].t < cutoff) state.trendSamples.shift();
+      if (state.trendSamples.length > 400) state.trendSamples.shift();
+    }
+
+    function updateStability(metrics, now) {
+      if (!metrics.valid) return null;
+      state.stabilitySamples.push({ t: now, dev: metrics.hipDeviation, y: metrics.hip.y });
+      const cutoff = now - 2000;
+      while (state.stabilitySamples.length && state.stabilitySamples[0].t < cutoff) state.stabilitySamples.shift();
+      if (state.stabilitySamples.length < 6) return null;
+
+      const values = state.stabilitySamples.map((sample) => sample.dev);
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+      return Math.sqrt(variance);
+    }
+
+    // ---------- 错误稳定判定 + 提醒触发 ----------
+    function stabilize(items, now, dt) {
+      const confirmed = [];
+
+      items.forEach((item) => {
+        const rt = state.runtime[item.key];
+
+        if (item.level === 'ok') {
+          const wasActive = rt.active;
+          const wasError = rt.level === 'error';
+          rt.since = 0;
+          rt.pendingLevel = '';
+          rt.active = false;
+          rt.level = '';
+          if (wasActive && wasError) {
+            // 从错误恢复正常
+            if (now - state.recoveredAt > 4000) {
+              state.recoveredAt = now;
+              playRecoverBeep();
+            }
+          }
+          return;
+        }
+
+        if (!rt.since || rt.pendingLevel !== item.level) {
+          rt.since = now;
+          rt.pendingLevel = item.level;
+          return;
+        }
+
+        const holdNeeded = item.level === 'error' ? ERROR_CONFIRM_MS : WARN_CONFIRM_MS;
+        if (now - rt.since < holdNeeded) return;
+
+        const isNewEpisode = !rt.active || rt.level !== item.level;
+        if (isNewEpisode) {
+          if (!rt.active) {
+            rt.count += 1;
+            if (item.level === 'error') state.errCount += 1;
+          }
+          rt.active = true;
+          rt.level = item.level;
+          triggerAlert(item, rt, now);
+        } else if (item.level === 'error' && now - rt.lastVoiceAt > ERROR_VOICE_COOLDOWN) {
+          // 错误持续中，周期性再提醒一次
+          if (state.soundEnabled && now - rt.lastBeepAt > ERROR_BEEP_COOLDOWN * 2) {
+            rt.lastBeepAt = now;
+            playErrorBeep();
+          }
+          rt.lastVoiceAt = now;
+          speak(item.name);
+        }
+
+        confirmed.push({ ...item, ms: rt.ms, count: rt.count });
+      });
+
+      return confirmed;
+    }
+
+    function triggerAlert(item, rt, now) {
+      if (item.level === 'error') {
+        if (now - rt.lastBeepAt > ERROR_BEEP_COOLDOWN) {
+          rt.lastBeepAt = now;
+          playErrorBeep();
+        }
+        if (now - rt.lastVoiceAt > ERROR_VOICE_COOLDOWN) {
+          rt.lastVoiceAt = now;
+          speak(`${item.name}，${item.tip}`);
+        }
+      } else if (now - rt.lastBeepAt > ERROR_BEEP_COOLDOWN * 2) {
+        rt.lastBeepAt = now;
+        playWarnBeep();
+      }
+    }
+
+    // ---------- UI 更新 ----------
+    function formatDuration(ms) {
+      const totalSeconds = Math.floor(ms / 1000);
+      return `${String(Math.floor(totalSeconds / 60)).padStart(2, '0')}:${String(totalSeconds % 60).padStart(2, '0')}`;
+    }
+
+    function setFeedback(title, detail) {
+      feedbackTitle.textContent = title;
+      feedbackDetail.textContent = detail;
+    }
+
+    const issueRowEls = new Map();
+    ISSUE_DEFS.forEach((def) => {
+      const row = document.createElement('div');
+      row.className = 'issue-row ok';
+      row.innerHTML = `<span class="name">${def.name}</span><span class="state">--</span>`;
+      issueListEl.appendChild(row);
+      issueRowEls.set(def.key, row);
+    });
+
+    function renderIssues(items, confirmed) {
+      const confirmedMap = new Map(confirmed.map((item) => [item.key, item]));
+
+      ISSUE_DEFS.forEach((def) => {
+        const row = issueRowEls.get(def.key);
+        const item = items.find((entry) => entry.key === def.key);
+        const rt = state.runtime[def.key];
+        const level = item ? item.level : 'ok';
+        const isConfirmed = confirmedMap.has(def.key);
+
+        row.className = `issue-row ${level}`;
+        const stateText = level === 'ok'
+          ? (rt.count > 0 ? `已恢复 · 错误${rt.count}次` : '正常')
+          : `${isConfirmed ? '错误' : '检测中'} · ${item.valueText} · ${rt.count}次`;
+        row.querySelector('.state').textContent = stateText;
+      });
+    }
+
+    function renderReport() {
+      reportErrTime.textContent = `${(state.errMs / 1000).toFixed(1)} 秒`;
+      reportWarnTime.textContent = `${(state.warnMs / 1000).toFixed(1)} 秒`;
+      reportErrCount.textContent = `${state.errCount} 次`;
+
+      const ranked = ISSUE_DEFS
+        .map((def) => ({ def, rt: state.runtime[def.key] }))
+        .filter((entry) => entry.rt.ms > 300)
+        .sort((a, b) => b.rt.ms - a.rt.ms)
+        .slice(0, 2);
+
+      if (!ranked.length) {
+        reportMain.textContent = '暂无';
+        reportAdvice.textContent = '保持标准姿势';
+        return;
+      }
+
+      reportMain.textContent = ranked.map((entry) => `${entry.def.name}(${(entry.rt.ms / 1000).toFixed(1)}s)`).join('、');
+      reportAdvice.textContent = ranked[0].def.advice;
+    }
+
+    function updateTrendChart(now) {
+      const width = trendCanvas.width;
+      const height = trendCanvas.height;
+      trendCtx.clearRect(0, 0, width, height);
+
+      // 背景
+      trendCtx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+      trendCtx.fillRect(0, 0, width, height);
+
+      const padLeft = 6;
+      const padRight = 6;
+      const plotW = width - padLeft - padRight;
+      const plotH = height - 14;
+
+      const mapAngleY = (value) => plotH - ((Math.min(Math.max(value, 100), 180) - 100) / 80) * plotH + 7;
+      const mapDevY = (value) => plotH / 2 - (value / 40) * (plotH / 2) + 7;
+
+      const windowMs = 24000;
+      const mapX = (t) => padLeft + ((t - (now - windowMs)) / windowMs) * plotW;
+
+      // 目标区间 160°~180°
+      trendCtx.fillStyle = 'rgba(75, 255, 144, 0.12)';
+      const bandTop = mapAngleY(180);
+      const bandBottom = mapAngleY(160);
+      trendCtx.fillRect(padLeft, bandTop, plotW, Math.max(bandBottom - bandTop, 1));
+
+      // 髋部偏差零线
+      trendCtx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+      trendCtx.lineWidth = 1.5;
+      trendCtx.beginPath();
+      trendCtx.moveTo(padLeft, mapDevY(0));
+      trendCtx.lineTo(width - padRight, mapDevY(0));
+      trendCtx.stroke();
+
+      const samples = state.trendSamples;
+      if (samples.length > 1) {
+        // 髋部偏差曲线
+        trendCtx.strokeStyle = 'rgba(255, 92, 92, 0.85)';
+        trendCtx.lineWidth = 2;
+        trendCtx.beginPath();
+        samples.forEach((sample, index) => {
+          const x = mapX(sample.t);
+          const y = mapDevY(sample.dev);
+          if (index === 0) trendCtx.moveTo(x, y);
+          else trendCtx.lineTo(x, y);
+        });
+        trendCtx.stroke();
+
+        // 身体直线度曲线
+        trendCtx.strokeStyle = 'rgba(255, 225, 77, 0.95)';
+        trendCtx.lineWidth = 2.6;
+        trendCtx.beginPath();
+        samples.forEach((sample, index) => {
+          const x = mapX(sample.t);
+          const y = mapAngleY(sample.line);
+          if (index === 0) trendCtx.moveTo(x, y);
+          else trendCtx.lineTo(x, y);
+        });
+        trendCtx.stroke();
+      }
+
+      trendCtx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+      trendCtx.font = '900 16px "Microsoft YaHei", Arial, sans-serif';
+      trendCtx.fillText('直线度 100°~180°（绿区=标准）', padLeft + 6, 20);
+      trendCtx.fillStyle = 'rgba(255, 140, 140, 0.9)';
+      trendCtx.fillText('红=髋部偏差 ±40%', padLeft + 6, height - 8);
+    }
+
+    function updatePanel(metrics, analysisItems, confirmed, stabilityStd, dt, now) {
+      const errors = confirmed.filter((item) => item.level === 'error');
+      const warnings = confirmed.filter((item) => item.level === 'warn');
+      const blocked = errors.length > 0;
+
+      // 计时：仅在没有确认错误时累计
+      if (!blocked && !state.paused && dt > 0 && dt < 500 && metrics.valid) {
+        state.holdMs += dt;
+        if (state.holdMs > state.bestMs) state.bestMs = state.holdMs;
+      }
+      state.holdingNow = !blocked && !state.paused && metrics.valid;
+
+      // 累计错误/注意时长 + 评分
+      if (!state.paused && dt > 0 && dt < 500) {
+        confirmed.forEach((item) => {
+          const rt = state.runtime[item.key];
+          rt.ms += dt;
+          if (item.level === 'error') state.errMs += dt;
+          else state.warnMs += dt;
+        });
+      }
+
+      const score = Math.max(0, Math.min(100, Math.round(100 - (state.errMs / 1000) * 4 - (state.warnMs / 1000) * 1.2)));
+      scoreValue.textContent = String(score);
+      scoreChip.className = `score-chip${score >= 85 ? '' : score >= 60 ? ' mid' : ' low'}`;
+
+      // 数值指标
+      lineText.textContent = `${metrics.bodyLineAngle}°`;
+      hipText.textContent = `${(metrics.hipDeviation * 100).toFixed(1)}%`;
+      elbowText.textContent = `${metrics.elbowAngle}°`;
+      neckText.textContent = metrics.neckVisible ? `${metrics.neckAngle}°` : '--';
+      levelText.textContent = metrics.isPlankPosition ? `${metrics.torsoLevelDeg}°` : '--';
+      stabilityText.textContent = stabilityStd === null ? '--' : `${(stabilityStd * 100).toFixed(1)}`;
+      confidenceText.textContent = `${Math.round(metrics.confidence * 100)}%`;
+
+      // 姿态标签
+      let posture;
+      if (blocked) posture = { status: 'bad', label: errors[0].name };
+      else if (warnings.length) posture = { status: 'wait', label: '需注意' };
+      else if (metrics.valid) posture = { status: 'ok', label: metrics.isPlankPosition ? '姿态标准' : '等待进入支撑' };
+      else posture = { status: 'bad', label: '姿态错误' };
+      postureMetric.classList.remove('posture-ok', 'posture-bad', 'posture-wait');
+      postureMetric.classList.add(`posture-${posture.status}`);
+      postureText.textContent = posture.label;
+
+      // 保持时间 / 进度
+      holdTimeEl.textContent = formatDuration(state.holdMs);
+      bestText.textContent = formatDuration(state.bestMs);
+      const progress = Math.min((state.holdMs / HOLD_TARGET_MS) * 100, 100);
+      progressFill.style.width = `${progress}%`;
+      progressText.textContent = state.holdMs >= HOLD_TARGET_MS
+        ? `已达成 60 秒目标！${formatDuration(state.holdMs)}`
+        : `${formatDuration(state.holdMs)} / 00:60`;
+
+      // 画面提醒：边框闪烁 + 顶部横幅
+      const alertItem = errors[0] || warnings[0] || null;
+      if (alertItem && !state.paused) {
+        stage.classList.toggle('alert', Boolean(errors.length));
+        alertBanner.classList.add('show');
+        alertBanner.classList.toggle('warn', !errors.length);
+        alertBanner.textContent = `${errors.length ? '⚠ ' : '! '}${alertItem.name}：${alertItem.tip}（已 ${state.runtime[alertItem.key].count} 次）`;
+      } else {
+        stage.classList.remove('alert');
+        alertBanner.classList.remove('show');
+      }
+
+      // 底部反馈
+      if (state.paused) {
+        setFeedback('计时已暂停', `当前累计 ${formatDuration(state.holdMs)}，点击"继续计时"恢复。`);
+      } else if (errors.length) {
+        setFeedback(`❌ ${errors[0].name}`, `${errors[0].tip}　计时已暂停，纠正后自动继续。`);
+      } else if (warnings.length) {
+        setFeedback(`⚠ ${warnings[0].name}`, `${warnings[0].tip}　（轻微问题不影响计时）`);
+      } else if (metrics.valid && metrics.isPlankPosition) {
+        setFeedback(`✅ 支撑中 ${formatDuration(state.holdMs)}`, '肩、髋、膝、踝成一条直线，肘部支撑正确，继续保持！');
+      } else if (metrics.valid) {
+        setFeedback('等待进入平板支撑', '肘撑地面，肘部在肩部正下方，身体抬成一条直线。');
+      } else {
+        setFeedback('未检测到完整人体', '请让全身进入画面并保证光线充足。');
+      }
+
+      renderIssues(analysisItems, confirmed);
+
+      if (now - state.lastUiAt > 120) {
+        state.lastUiAt = now;
+        renderReport();
+        updateTrendChart(now);
+      }
+    }
+
+    // ---------- 绘制 ----------
+    function drawPose(landmarks, metrics, confirmed) {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      canvas.width = video.videoWidth || canvas.clientWidth;
+      canvas.height = video.videoHeight || canvas.clientHeight;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const errorKeys = new Set(confirmed.filter((item) => item.level === 'error').map((item) => item.key));
+      const warnKeys = new Set(confirmed.filter((item) => item.level === 'warn').map((item) => item.key));
+
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 5;
+      POSE_CONNECTIONS.forEach(({ start, end }) => {
+        const from = landmarks[start];
+        const to = landmarks[end];
+        if (visibilityOf(from) < 0.35 || visibilityOf(to) < 0.35) return;
+        const isHipLink = (start === 11 && end === 23) || (start === 12 && end === 24);
+        const isElbowLink = (start === 11 && end === 13) || (start === 12 && end === 14);
+        let stroke = 'rgba(255, 225, 77, 0.92)';
+        if (isHipLink && (errorKeys.has('sag') || errorKeys.has('pike') || errorKeys.has('line'))) stroke = 'rgba(255, 92, 92, 0.95)';
+        else if (isElbowLink && (errorKeys.has('elbowAngle') || errorKeys.has('elbowPos'))) stroke = 'rgba(255, 122, 60, 0.95)';
+        ctx.strokeStyle = stroke;
+        ctx.beginPath();
+        ctx.moveTo(from.x * canvas.width, from.y * canvas.height);
+        ctx.lineTo(to.x * canvas.width, to.y * canvas.height);
+        ctx.stroke();
+      });
+
+      ctx.fillStyle = '#ffe14d';
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.lineWidth = 2;
+      landmarks.forEach((point) => {
+        if (visibilityOf(point) < 0.35) return;
+        ctx.beginPath();
+        ctx.arc(point.x * canvas.width, point.y * canvas.height, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      });
+      ctx.restore();
+
+      drawBodyLine(ctx, metrics, canvas.width, canvas.height);
+      drawAngleLabels(ctx, landmarks, canvas.width, canvas.height);
+      drawIssueHighlights(ctx, landmarks, metrics, errorKeys, warnKeys, canvas.width, canvas.height);
+    }
+
+    function drawBodyLine(ctx, metrics, width, height) {
+      if (!metrics.valid) return;
+
+      const shoulder = { x: metrics.shoulder.x * width, y: metrics.shoulder.y * height };
+      const ankle = { x: metrics.ankle.x * width, y: metrics.ankle.y * height };
+      const hip = { x: metrics.hip.x * width, y: metrics.hip.y * height };
+      const proj = { x: metrics.hipDeviationPx.x * width, y: metrics.hipDeviationPx.y * height };
+      const devBig = Math.abs(metrics.hipDeviation) > 0.07;
+
+      ctx.save();
+      ctx.setLineDash([12, 10]);
+      ctx.strokeStyle = devBig ? 'rgba(255, 92, 92, 0.9)' : 'rgba(75, 255, 144, 0.85)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(shoulder.x, shoulder.y);
+      ctx.lineTo(ankle.x, ankle.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.strokeStyle = devBig ? '#ff5c5c' : 'rgba(255, 255, 255, 0.7)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(hip.x, hip.y);
+      ctx.lineTo(proj.x, proj.y);
+      ctx.stroke();
+
+      ctx.fillStyle = devBig ? '#ff5c5c' : '#4bff90';
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(hip.x, hip.y, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawRoundedRect(ctx, x, y, width, height, radius) {
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(x, y, width, height, radius);
+        return;
+      }
+      const r = Math.min(radius, width / 2, height / 2);
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + width - r, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+      ctx.lineTo(x + width, y + height - r);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+      ctx.lineTo(x + r, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+    }
+
+    function drawLabel(ctx, text, x, y, color = '#ff4b3e') {
+      const isMirrored = !stage.classList.contains('rear-camera');
+      const labelX = Math.min(Math.max(x, 10), canvas.width - 10);
+      const labelY = Math.min(Math.max(y, 26), canvas.height - 10);
+
+      ctx.save();
+      if (isMirrored) {
+        ctx.translate(labelX, labelY);
+        ctx.scale(-1, 1);
+        ctx.translate(-labelX, -labelY);
+      }
+
+      ctx.font = '900 22px "Microsoft YaHei", Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const boxWidth = ctx.measureText(text).width + 20;
+      const boxHeight = 32;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      drawRoundedRect(ctx, labelX - boxWidth / 2, labelY - boxHeight / 2, boxWidth, boxHeight, 9);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+      ctx.shadowBlur = 5;
+      ctx.fillText(text, labelX, labelY);
+      ctx.restore();
+    }
+
+    function drawAngleLabels(ctx, landmarks, width, height) {
+      const visibleEnough = (index) => visibilityOf(landmarks[index]) >= 0.45;
+      const jointConfigs = [
+        { points: [23, 11, 13], offset: [-44, -10], color: '#3bff83' },
+        { points: [24, 12, 14], offset: [44, -10], color: '#3bff83' },
+        { points: [11, 13, 15], offset: [-36, -26], color: '#5f7dff' },
+        { points: [12, 14, 16], offset: [36, -26], color: '#5f7dff' },
+        { points: [11, 23, 25], offset: [-38, 10], color: '#ff4b3e' },
+        { points: [12, 24, 26], offset: [38, 10], color: '#ff4b3e' },
+        { points: [23, 25, 27], offset: [-34, -22], color: '#ff4b3e' },
+        { points: [24, 26, 28], offset: [34, -22], color: '#ff4b3e' },
+      ];
+
+      jointConfigs.forEach(({ points, offset, color }) => {
+        if (!points.every(visibleEnough)) return;
+        const joint = landmarks[points[1]];
+        const jointAngle = angle(landmarks[points[0]], joint, landmarks[points[2]]);
+        if (!jointAngle) return;
+        drawLabel(ctx, `${jointAngle}°`, joint.x * width + offset[0], joint.y * height + offset[1], color);
+      });
+    }
+
+    function drawIssueHighlights(ctx, landmarks, metrics, errorKeys, warnKeys, width, height) {
+      if (!metrics.valid) return;
+
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 180);
+      const spots = [];
+
+      const hip = { x: metrics.hip.x * width, y: metrics.hip.y * height };
+      const elbow = { x: metrics.elbow.x * width, y: metrics.elbow.y * height };
+      const shoulder = { x: metrics.shoulder.x * width, y: metrics.shoulder.y * height };
+      const ear = midpoint(landmarks[7], landmarks[8]);
+      const earPos = { x: ear.x * width, y: ear.y * height };
+
+      if (errorKeys.has('sag')) spots.push({ x: hip.x, y: hip.y, text: '塌腰', level: 'error' });
+      if (errorKeys.has('pike')) spots.push({ x: hip.x, y: hip.y, text: '翘臀', level: 'error' });
+      if (errorKeys.has('line')) spots.push({ x: hip.x, y: hip.y - 46, text: '身体未成直线', level: 'error' });
+      if (errorKeys.has('elbowAngle')) spots.push({ x: elbow.x, y: elbow.y, text: '肘角异常', level: 'error' });
+      if (errorKeys.has('elbowPos')) spots.push({ x: elbow.x, y: elbow.y + 44, text: '肘部偏移', level: 'error' });
+      if (errorKeys.has('neck')) spots.push({ x: earPos.x, y: earPos.y - 34, text: '头颈姿态', level: 'error' });
+      if (errorKeys.has('twist')) spots.push({ x: shoulder.x, y: shoulder.y - 40, text: '身体扭转', level: 'error' });
+      if (errorKeys.has('stability')) spots.push({ x: hip.x, y: hip.y + 46, text: '身体晃动', level: 'warn' });
+
+      warnKeys.forEach((key) => {
+        if (errorKeys.has(key)) return;
+        if (key === 'sag' || key === 'pike') spots.push({ x: hip.x, y: hip.y + 46, text: ISSUE_MAP[key].name, level: 'warn' });
+        else if (key === 'elbowAngle' || key === 'elbowPos') spots.push({ x: elbow.x, y: elbow.y - 44, text: ISSUE_MAP[key].name, level: 'warn' });
+        else if (key === 'neck') spots.push({ x: earPos.x, y: earPos.y - 34, text: ISSUE_MAP[key].name, level: 'warn' });
+        else if (key === 'line') spots.push({ x: hip.x, y: hip.y - 46, text: '直线上注意', level: 'warn' });
+        else if (key === 'twist') spots.push({ x: shoulder.x, y: shoulder.y - 40, text: ISSUE_MAP[key].name, level: 'warn' });
+        else if (key === 'level') spots.push({ x: shoulder.x, y: shoulder.y + 40, text: '躯干倾斜', level: 'warn' });
+      });
+
+      spots.forEach((spot) => {
+        const color = spot.level === 'error' ? `rgba(255, 80, 80, ${0.55 + pulse * 0.4})` : `rgba(255, 200, 40, ${0.5 + pulse * 0.35})`;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(spot.x, spot.y, 26 + pulse * 8, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        drawLabel(ctx, spot.text, spot.x, spot.y - (spot.level === 'error' ? 52 : 50), spot.level === 'error' ? '#ff8080' : '#ffe14d');
+      });
+    }
+
+    // ---------- 主循环 ----------
+    async function predictLoop() {
+      if (!state.landmarker || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        state.rafId = requestAnimationFrame(predictLoop);
+        return;
+      }
+
+      if (!state.predicting && video.currentTime !== state.lastVideoTime) {
+        state.lastVideoTime = video.currentTime;
+        state.predicting = true;
+
+        const now = performance.now();
+        const dt = state.lastTs ? now - state.lastTs : 0;
+        state.lastTs = now;
+
+        try {
+          const poses = await state.landmarker.estimatePoses(video, ESTIMATE_CONFIG);
+          const landmarks = poses?.[0] ? convertPoseToLandmarks(poses[0]) : null;
+
+          if (landmarks) {
+            const metrics = getPlankMetrics(landmarks);
+            const stabilityStd = updateStability(metrics, now);
+            const rawItems = buildAnalysis(metrics, stabilityStd);
+            const confirmed = stabilize(rawItems, now, dt);
+            updateTrendSamples(metrics, now);
+            drawPose(landmarks, metrics, confirmed);
+            updatePanel(metrics, rawItems, confirmed, stabilityStd, dt, now);
+          } else {
+            state.trendSamples.push({ t: now, line: 100, dev: 0, error: true });
+            const rawItems = [{ key: 'frame', level: 'error', name: '全身入镜', tip: '请让头和脚都进入画面', advice: '把设备放远一点，让全身完整入镜', valueText: '未检测到' }];
+            const confirmed = stabilize(rawItems, now, dt);
+            updatePanel(
+              { valid: false, isPlankPosition: false, bodyLineAngle: 0, hipDeviation: 0, elbowAngle: 0, torsoLevelDeg: 0, confidence: 0, neckVisible: false, neckAngle: 0 },
+              rawItems,
+              confirmed,
+              null,
+              dt,
+              now,
+            );
+            stage.classList.add('alert');
+            alertBanner.classList.add('show');
+            alertBanner.textContent = '⚠ 未检测到人体：请让全身进入画面';
+          }
+        } catch (error) {
+          console.error('姿态识别失败：', error);
+          setFeedback('姿态识别失败', '请刷新页面重试，或确认浏览器支持当前识别库。');
+        } finally {
+          state.predicting = false;
+        }
+      }
+
+      state.rafId = requestAnimationFrame(predictLoop);
+    }
+
+    // ---------- 摄像头 ----------
+    function stopCamera() {
+      if (!state.stream) return;
+      state.stream.getTracks().forEach((track) => track.stop());
+      state.stream = null;
+      video.srcObject = null;
+    }
+
+    async function refreshVideoDevices() {
+      if (!navigator.mediaDevices?.enumerateDevices) {
+        state.devices = [];
+        return state.devices;
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      state.devices = devices.filter((device) => device.kind === 'videoinput');
+      return state.devices;
+    }
+
+    function findCameraDevice(facingMode) {
+      const frontWords = ['front', 'user', 'facetime', '前', '正面'];
+      const rearWords = ['back', 'rear', 'environment', '后', '背面'];
+      const words = facingMode === 'environment' ? rearWords : frontWords;
+      const matched = state.devices.find((device) => {
+        const label = device.label.toLowerCase();
+        return words.some((word) => label.includes(word));
+      });
+
+      if (matched) return matched;
+      if (state.devices.length < 2) return null;
+
+      const currentIndex = state.devices.findIndex((device) => device.deviceId === state.currentDeviceId);
+      if (currentIndex >= 0) return state.devices[(currentIndex + 1) % state.devices.length];
+      return facingMode === 'environment' ? state.devices[state.devices.length - 1] : state.devices[0];
+    }
+
+    function getCameraAttempts(facingMode, deviceId = '') {
+      const baseSize = { width: { ideal: 1280 }, height: { ideal: 720 } };
+      const attempts = [];
+      if (deviceId) {
+        attempts.push({ video: { ...baseSize, deviceId: { exact: deviceId } }, audio: false });
+        attempts.push({ video: { ...baseSize, deviceId: { ideal: deviceId } }, audio: false });
+      }
+      attempts.push({ video: { ...baseSize, facingMode: { exact: facingMode } }, audio: false });
+      attempts.push({ video: { ...baseSize, facingMode: { ideal: facingMode } }, audio: false });
+      attempts.push({ video: baseSize, audio: false });
+      attempts.push({ video: true, audio: false });
+      return attempts;
+    }
+
+    function applyCameraUi() {
+      const isRear = state.facingMode === 'environment';
+      stage.classList.toggle('rear-camera', isRear);
+      cameraBtn.textContent = isRear ? '切换到前置摄像头' : '切换到后置摄像头';
+      cameraBtn.disabled = state.cameraSwitching;
+    }
+
+    async function startCamera(options = {}) {
+      const facingMode = options.facingMode || state.facingMode;
+      const preferredDeviceId = options.deviceId || '';
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('当前浏览器没有开放摄像头 API。请用系统浏览器打开本文件，或把文件放到 HTTPS/localhost 页面访问。');
+      }
+
+      stopCamera();
+      let lastError = null;
+      for (const constraints of getCameraAttempts(facingMode, preferredDeviceId)) {
+        try {
+          state.stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      if (!state.stream) throw lastError || new Error('摄像头启动失败');
+
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', '');
+      video.autoplay = true;
+      video.muted = true;
+      video.srcObject = state.stream;
+      await video.play();
+
+      await refreshVideoDevices();
+      const track = state.stream.getVideoTracks()[0];
+      const settings = track?.getSettings?.() || {};
+      state.currentDeviceId = settings.deviceId || preferredDeviceId || '';
+      state.facingMode = settings.facingMode || facingMode;
+      applyCameraUi();
+    }
+
+    async function switchCamera() {
+      if (state.cameraSwitching) return;
+
+      const previousFacingMode = state.facingMode;
+      const previousDeviceId = state.currentDeviceId;
+      const nextFacingMode = previousFacingMode === 'user' ? 'environment' : 'user';
+      state.cameraSwitching = true;
+      applyCameraUi();
+      statusEl.textContent = '正在切换摄像头...';
+
+      try {
+        await refreshVideoDevices();
+        const targetDevice = findCameraDevice(nextFacingMode);
+        await startCamera({ facingMode: nextFacingMode, deviceId: targetDevice?.deviceId || '' });
+        statusEl.textContent = state.facingMode === 'environment' ? '后置摄像头识别中' : '前置摄像头识别中';
+        setFeedback('摄像头已切换', state.facingMode === 'environment' ? '当前使用后置摄像头，画面不做镜像。' : '当前使用前置摄像头，画面已镜像显示。');
+      } catch (error) {
+        console.error(error);
+        try {
+          await startCamera({ facingMode: previousFacingMode, deviceId: previousDeviceId });
+        } catch (restoreError) {
+          console.error(restoreError);
+        }
+        statusEl.textContent = '摄像头切换失败';
+        setFeedback('摄像头切换失败', '当前设备或浏览器可能不允许切换，请确认已授权摄像头并重试。');
+      } finally {
+        state.cameraSwitching = false;
+        applyCameraUi();
+      }
+    }
+
+    async function init() {
+      try {
+        statusEl.textContent = '正在加载模型...';
+
+        const modelCacheEnabled = await prepareModelCache();
+        setFeedback(
+          '正在加载模型',
+          modelCacheEnabled
+            ? '已找到本地模型缓存，本次会优先从本地读取。'
+            : window.caches
+              ? '首次加载会联网获取模型；成功后会保存到浏览器本地缓存。'
+              : '当前本地文件环境不支持模型持久缓存，本次会直接联网加载模型。',
+        );
+
+        state.landmarker = await initializePoseDetector();
+        const confirmedCache = await ensureModelCacheReady();
+
+        await startCamera();
+        statusEl.textContent = '实时识别中';
+        setFeedback(
+          '准备就绪',
+          confirmedCache ? '模型已缓存。摆好平板支撑姿势后自动开始计时，动作出错会立即提醒。' : '摆好平板支撑姿势后自动开始计时，动作出错会立即提醒。',
+        );
+        predictLoop();
+      } catch (error) {
+        console.error(error);
+        statusEl.textContent = '启动失败';
+        setFeedback('启动失败', error?.message || '请确认浏览器可以加载模型并允许访问摄像头。');
+      }
+    }
+
+    // ---------- 交互 ----------
+    document.addEventListener('click', initAudio, { once: true });
+
+    pauseBtn.addEventListener('click', () => {
+      state.paused = !state.paused;
+      pauseBtn.textContent = state.paused ? '继续计时' : '暂停计时';
+      if (state.paused) {
+        setFeedback('计时已暂停', `当前累计 ${formatDuration(state.holdMs)}，点击"继续计时"恢复。`);
+      } else {
+        state.lastTs = performance.now();
+        setFeedback('计时已恢复', '姿势标准时会继续累计保持时间。');
+      }
+    });
+
+    resetBtn.addEventListener('click', () => {
+      state.holdMs = 0;
+      state.errMs = 0;
+      state.warnMs = 0;
+      state.errCount = 0;
+      state.lastTs = performance.now();
+      state.trendSamples = [];
+      state.stabilitySamples = [];
+      ISSUE_DEFS.forEach((def) => {
+        state.runtime[def.key] = { since: 0, pendingLevel: '', active: false, level: '', count: 0, ms: 0, lastBeepAt: 0, lastVoiceAt: 0, id: '' };
+      });
+      holdTimeEl.textContent = '00:00';
+      progressFill.style.width = '0%';
+      progressText.textContent = '目标 60 秒';
+      scoreValue.textContent = '100';
+      scoreChip.className = 'score-chip';
+      stage.classList.remove('alert');
+      alertBanner.classList.remove('show');
+      renderReport();
+      updateTrendChart(performance.now());
+      setFeedback('已重置', '保持时间与错误统计已清零（最长保持记录保留）。');
+    });
+
+    soundBtn.addEventListener('click', () => {
+      state.soundEnabled = !state.soundEnabled;
+      soundBtn.classList.toggle('on', state.soundEnabled);
+      soundBtn.textContent = `错误提示音：${state.soundEnabled ? '开' : '关'}`;
+      if (state.soundEnabled) playWarnBeep();
+    });
+
+    voiceBtn.addEventListener('click', () => {
+      state.voiceEnabled = !state.voiceEnabled;
+      voiceBtn.classList.toggle('on', state.voiceEnabled);
+      voiceBtn.textContent = `语音播报：${state.voiceEnabled ? '开' : '关'}`;
+      if (state.voiceEnabled) speak('语音提醒已开启');
+      else if (window.speechSynthesis) window.speechSynthesis.cancel();
+    });
+
+    cameraBtn.addEventListener('click', switchCamera);
+
+    window.addEventListener('resize', () => {
+      canvas.width = video.videoWidth || canvas.clientWidth;
+      canvas.height = video.videoHeight || canvas.clientHeight;
+      trendCanvas.width = Math.max(trendCanvas.clientWidth, 320);
+      trendCanvas.height = Math.round(trendCanvas.width * 0.3);
+    });
+
+    window.addEventListener('orientationchange', () => {
+      window.setTimeout(() => {
+        canvas.width = video.videoWidth || canvas.clientWidth;
+        canvas.height = video.videoHeight || canvas.clientHeight;
+        trendCanvas.width = Math.max(trendCanvas.clientWidth, 320);
+        trendCanvas.height = Math.round(trendCanvas.width * 0.3);
+      }, 300);
+    });
+
+    window.addEventListener('beforeunload', () => {
+      cancelAnimationFrame(state.rafId);
+      stopCamera();
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+      if (state.landmarker?.dispose) state.landmarker.dispose();
+    });
+
+    window.addEventListener('load', () => {
+      trendCanvas.width = Math.max(trendCanvas.clientWidth, 320);
+      trendCanvas.height = Math.round(trendCanvas.width * 0.3);
+      init();
+    });
+  </script>
+</body>
+</html>
